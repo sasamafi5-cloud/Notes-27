@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover"/>
+<meta name="theme-color" content="#07111F"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Beleške"/>
+<meta name="application-name" content="Beleške"/>
+<title>Beleške PWA</title>
+<link rel="manifest" href="manifest.json"/>
+<link rel="apple-touch-icon" href="icon-192.png"/>
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png"/>
+<link href="https://fonts.googleapis.com/css2?family=Exo+2:wght@400;500;600;700;800;900&display=swap" rel="stylesheet"/>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;margin:0;padding:0;}
+html,body{height:100%;overflow-x:hidden;background:#07111F;}
+body{font-family:'Exo 2',sans-serif;}
+::-webkit-scrollbar{width:3px;}
+::-webkit-scrollbar-thumb{background:rgba(30,100,220,0.5);border-radius:3px;}
+textarea,input{outline:none;font-family:inherit;}
+input[type=range]{-webkit-appearance:none;appearance:none;height:5px;border-radius:3px;cursor:pointer;outline:none;border:none;width:100%;}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;cursor:pointer;transition:transform 0.1s;}
+input[type=range]::-webkit-slider-thumb:active{transform:scale(1.2);}
+input[type=range]::-moz-range-thumb{width:20px;height:20px;border-radius:50%;border:none;cursor:pointer;}
+button{border:none;background:none;cursor:pointer;font-family:inherit;}
+@keyframes slideDown{from{transform:translateY(-12px);opacity:0}to{transform:translateY(0);opacity:1}}
+@keyframes popIn{0%{transform:scale(0.85) translateX(-50%);opacity:0}60%{transform:scale(1.05) translateX(-50%)}100%{transform:scale(1) translateX(-50%);opacity:1}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+@keyframes pulseGlow{0%,100%{opacity:1}50%{opacity:0.5}}
+.card-btn:active{transform:scale(0.95) translateY(2px)!important;transition:transform 0.1s!important;}
+.main-btn:active{transform:scale(0.93) translateY(3px)!important;transition:transform 0.1s!important;}
+.tool-btn:active{transform:scale(0.88)!important;transition:transform 0.1s!important;}
+.note-item:active{opacity:0.7;}
+.plus-btn:active{transform:scale(0.88) rotate(45deg)!important;transition:transform 0.15s!important;}
+.gear-btn:active{transform:scale(0.88) rotate(45deg)!important;transition:transform 0.2s!important;}
+#pwa-install{display:none;position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#1a6eff,#0040cc);color:#fff;padding:10px 20px;border-radius:25px;font-weight:700;font-size:13px;z-index:300;box-shadow:0 4px 20px rgba(26,110,255,0.5);cursor:pointer;animation:pulseGlow 2s infinite;}
+</style>
+</head>
+<body>
+<div id="app"><div style="display:flex;align-items:center;justify-content:center;height:100vh;color:#6a90c0;font-family:'Exo 2',sans-serif;font-size:14px;">Učitavanje...</div></div>
+<button id="pwa-install" onclick="installPWA()">📲 Instaliraj aplikaciju</button>
+
+<script>
+// ── Service Worker ──────────────────────────────────────────────────────────
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('./sw.js')
+      .then(r => console.log('SW registered:', r.scope))
+      .catch(e => console.log('SW error:', e));
+  });
+}
+
+// ── PWA Install prompt ──────────────────────────────────────────────────────
+let deferredPrompt = null;
+window.addEventListener('beforeinstallprompt', e => {
+  e.preventDefault();
+  deferredPrompt = e;
+  document.getElementById('pwa-install').style.display = 'block';
+});
+window.addEventListener('appinstalled', () => {
+  document.getElementById('pwa-install').style.display = 'none';
+  deferredPrompt = null;
+});
+function installPWA() {
+  if (deferredPrompt) {
+    deferredPrompt.prompt();
+    deferredPrompt.userChoice.then(() => {
+      deferredPrompt = null;
+      document.getElementById('pwa-install').style.display = 'none';
+    });
+  }
+}
+</script>
+
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── IndexedDB ────────────────────────────────────────────────────────────────
+const DB_NAME = "NotesAppDB4";
+function openDB() {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, 1);
+    req.onupgradeneeded = (e) => {
+      const db = e.target.result;
+      if (!db.objectStoreNames.contains("notes")) {
+        const s = db.createObjectStore("notes", { keyPath: "id" });
+        s.createIndex("category", "category", { unique: false });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+async function dbGetByCategory(cat) {
+  const db = await openDB();
+  return new Promise(res => {
+    const req = db.transaction("notes","readonly").objectStore("notes").index("category").getAll(cat);
+    req.onsuccess = () => res(req.result.sort((a,b) => a.createdAt - b.createdAt));
+    req.onerror = () => res([]);
+  });
+}
+async function dbSave(note) {
+  const db = await openDB();
+  return new Promise(res => {
+    const tx = db.transaction("notes","readwrite");
+    tx.objectStore("notes").put(note);
+    tx.oncomplete = res;
+  });
+}
+async function dbDelete(id) {
+  const db = await openDB();
+  return new Promise(res => {
+    const tx = db.transaction("notes","readwrite");
+    tx.objectStore("notes").delete(id);
+    tx.oncomplete = res;
+  });
+}
+async function dbGetAll() {
+  const db = await openDB();
+  return new Promise(res => {
+    const req = db.transaction("notes","readonly").objectStore("notes").getAll();
+    req.onsuccess = () => res(req.result || []);
+    req.onerror = () => res([]);
+  });
+}
+
+// ── Themes ───────────────────────────────────────────────────────────────────
+const THEMES = {
+  light:{
+    name:"Svetla",icon:"☀️",
+    bg:"linear-gradient(135deg,#e8edf5,#f0f4ff,#e4ecf7)",
+    surface:"rgba(255,255,255,0.92)",surfaceBorder:"rgba(120,160,255,0.25)",
+    text:"#1a2340",textSub:"#5a6a8a",
+    panelBg:"rgba(255,255,255,0.96)",panelShadow:"0 8px 32px rgba(80,120,255,0.15)",
+    inputBorder:"rgba(100,150,255,0.3)",glow1:"rgba(60,120,255,0.3)",
+    cg1:"linear-gradient(145deg,#1a3a6e,#0d2040)",cg2:"linear-gradient(145deg,#3a2000,#1a0e00)",
+    cl1:"rgba(60,130,255,0.9)",cl2:"rgba(255,120,30,0.9)",
+    cb1:"rgba(60,130,255,0.6)",cb2:"rgba(255,120,30,0.6)",
+    ci1:"linear-gradient(145deg,#1e5ccc,#0a2e80)",ci2:"linear-gradient(145deg,#cc6600,#7a3500)",
+    cg1s:"rgba(30,92,204,0.5)",cg2s:"rgba(204,102,0,0.5)",
+    toolBg:"rgba(230,240,255,0.9)",toolBorder:"rgba(80,140,255,0.4)",
+    statusBar:"rgba(255,255,255,0.98)",anb:"rgba(60,120,255,0.5)",
+    settingsBg:"rgba(245,248,255,1)",
+  },
+  dark:{
+    name:"Tamno",icon:"🌙",
+    bg:"linear-gradient(135deg,#07111F,#0B1628,#071420)",
+    surface:"rgba(11,22,40,0.95)",surfaceBorder:"rgba(30,100,220,0.4)",
+    text:"#e0ecff",textSub:"#6a90c0",
+    panelBg:"rgba(10,20,38,0.98)",panelShadow:"0 8px 40px rgba(10,80,200,0.2)",
+    inputBorder:"rgba(30,100,220,0.5)",glow1:"rgba(30,120,255,0.5)",
+    cg1:"linear-gradient(145deg,#1a3a6e,#0d2040)",cg2:"linear-gradient(145deg,#3a2000,#1a0e00)",
+    cl1:"rgba(60,130,255,0.9)",cl2:"rgba(255,120,30,0.9)",
+    cb1:"rgba(60,130,255,0.6)",cb2:"rgba(255,120,30,0.6)",
+    ci1:"linear-gradient(145deg,#1e5ccc,#0a2e80)",ci2:"linear-gradient(145deg,#cc6600,#7a3500)",
+    cg1s:"rgba(30,92,204,0.5)",cg2s:"rgba(204,102,0,0.5)",
+    toolBg:"rgba(10,25,55,0.9)",toolBorder:"rgba(30,100,220,0.6)",
+    statusBar:"rgba(7,17,31,0.98)",anb:"rgba(40,130,255,0.7)",
+    settingsBg:"rgba(7,14,28,1)",
+  },
+  neon:{
+    name:"Neon",icon:"✨",
+    bg:"linear-gradient(135deg,#060318,#0d0525,#090220,#130630)",
+    surface:"rgba(15,5,40,0.9)",surfaceBorder:"rgba(140,60,255,0.5)",
+    text:"#f0e8ff",textSub:"#a080d0",
+    panelBg:"rgba(12,4,32,0.95)",panelShadow:"0 8px 40px rgba(120,40,255,0.25)",
+    inputBorder:"rgba(140,60,255,0.5)",glow1:"rgba(80,20,255,0.7)",
+    cg1:"linear-gradient(145deg,#2a0a6e,#16044a)",cg2:"linear-gradient(145deg,#4a006a,#2a003a)",
+    cl1:"rgba(120,40,255,0.9)",cl2:"rgba(255,40,200,0.9)",
+    cb1:"rgba(120,40,255,0.7)",cb2:"rgba(255,40,200,0.6)",
+    ci1:"linear-gradient(145deg,#6020cc,#3010a0)",ci2:"linear-gradient(145deg,#cc2080,#800040)",
+    cg1s:"rgba(80,20,200,0.5)",cg2s:"rgba(200,20,120,0.5)",
+    toolBg:"rgba(20,8,50,0.9)",toolBorder:"rgba(140,60,255,0.6)",
+    statusBar:"rgba(6,3,18,0.98)",anb:"rgba(160,60,255,0.8)",
+    settingsBg:"rgba(8,3,22,1)",
+  },
+};
+
+const DEF = {
+  cardScale:100,cardHeight:100,cardBR:18,cardPad:100,iconSize:100,
+  shadowBlur:30,shadowOp:100,shadowY:4,glowI:100,ledI:100,
+  btnBlur:24,btnOp:100,btnBR:16,btn3d:100,
+  toolSize:100,toolBR:16,
+};
+function ls(key,def){try{const v=localStorage.getItem(key);return v?JSON.parse(v):def;}catch{return def;}}
+function ss(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch{}}
+function genId(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
+function fmtDate(ts){const d=new Date(ts);return d.toLocaleDateString("sr-RS",{day:"2-digit",month:"2-digit",year:"2-digit"})+" "+d.toLocaleTimeString("sr-RS",{hour:"2-digit",minute:"2-digit"});}
+function preview(t){const s=t.trim();if(!s)return"Prazna beleška...";return s.length>40?s.slice(0,40)+"…":s;}
+
+// ── Slider ───────────────────────────────────────────────────────────────────
+function Slider({label,val,min,max,unit="",onChange,accent}){
+  const p=((val-min)/(max-min))*100;
+  return(
+    <div style={{display:"flex",flexDirection:"column",gap:5,marginBottom:4}}>
+      <div style={{display:"flex",justifyContent:"space-between"}}>
+        <span style={{fontSize:12,fontWeight:600,color:"#8899bb"}}>{label}</span>
+        <span style={{fontSize:12,fontWeight:800,color:accent}}>{val}{unit}</span>
+      </div>
+      <input type="range" min={min} max={max} value={val} onChange={e=>onChange(+e.target.value)}
+        style={{background:`linear-gradient(to right,${accent} ${p}%,rgba(80,100,150,0.25) ${p}%)`}}/>
+      <style>{`input[type=range]::-webkit-slider-thumb{background:${accent};box-shadow:0 0 8px ${accent}99;}input[type=range]::-moz-range-thumb{background:${accent};}`}</style>
+    </div>
+  );
+}
+
+// ── Photo Upload Tile ─────────────────────────────────────────────────────────
+function PhotoTile({ikey,label,icons,onUpload,t}){
+  const src=icons[ikey];
+  return(
+    <div onClick={()=>onUpload(ikey)} style={{display:"flex",flexDirection:"column",alignItems:"center",gap:5,background:t.surface,border:`1.5px solid ${t.surfaceBorder}`,borderRadius:14,padding:"10px 8px",cursor:"pointer",minWidth:74,flex:"0 0 auto",transition:"all 0.2s"}}>
+      <div style={{width:50,height:50,borderRadius:13,background:t.panelBg,border:`1.5px dashed ${t.surfaceBorder}`,display:"flex",alignItems:"center",justifyContent:"center",overflow:"hidden",fontSize:22}}>
+        {src?<img src={src} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>:"📷"}
+      </div>
+      <span style={{color:t.textSub,fontSize:9,fontWeight:700,textAlign:"center",lineHeight:1.4,whiteSpace:"pre-line"}}>{label}</span>
+      {src&&<span style={{fontSize:9,color:"#22c55e",fontWeight:800}}>✓ OK</span>}
+    </div>
+  );
+}
+
+// ── Settings ─────────────────────────────────────────────────────────────────
+function Settings({open,onClose,cfg,setCfg,icons,onUpload,t,accent}){
+  if(!open)return null;
+  function set(k,v){const n={...cfg,[k]:v};setCfg(n);ss("noteCfg2",n);}
+  function reset(){setCfg({...DEF});ss("noteCfg2",DEF);}
+  const photos=[
+    {k:"licno",l:"Kartica\nLično"},{k:"dokumenta",l:"Kartica\nDokumenta"},
+    {k:"bd",l:"Dugme\nObriši"},{k:"bs",l:"Dugme\nSačuvaj"},
+    {k:"ts",l:"Alat\nPretraga"},{k:"te",l:"Alat\nIzvoz"},{k:"th",l:"Alat\nDeljenje"},
+  ];
+  const sliders=[
+    {t:"📐 Kartice — Veličina",rows:[
+      {l:"Veličina kartica",k:"cardScale",min:30,max:100,u:"%"},
+      {l:"Visina kartica",k:"cardHeight",min:40,max:100,u:"%"},
+      {l:"Zaobljeni uglovi",k:"cardBR",min:4,max:32,u:"px"},
+      {l:"Unutrašnji razmak",k:"cardPad",min:30,max:100,u:"%"},
+      {l:"Veličina ikone",k:"iconSize",min:30,max:100,u:"%"},
+    ]},
+    {t:"🌟 Kartice — Senke & Sjaj",rows:[
+      {l:"Zamućenost senke",k:"shadowBlur",min:0,max:60,u:"px"},
+      {l:"Jačina senke",k:"shadowOp",min:0,max:100,u:"%"},
+      {l:"Pomak senke Y",k:"shadowY",min:0,max:20,u:"px"},
+      {l:"Intenzitet glowa",k:"glowI",min:0,max:100,u:"%"},
+      {l:"LED intenzitet",k:"ledI",min:0,max:100,u:"%"},
+    ]},
+    {t:"🔲 Dugmad — Oblik & 3D",rows:[
+      {l:"Zamućenost senke",k:"btnBlur",min:0,max:50,u:"px"},
+      {l:"Jačina senke",k:"btnOp",min:0,max:100,u:"%"},
+      {l:"Zaobljeni uglovi",k:"btnBR",min:4,max:30,u:"px"},
+      {l:"3D dubina",k:"btn3d",min:0,max:100,u:"%"},
+    ]},
+    {t:"🔧 Alati",rows:[
+      {l:"Veličina dugmadi",k:"toolSize",min:40,max:100,u:"%"},
+      {l:"Zaobljeni uglovi",k:"toolBR",min:4,max:28,u:"px"},
+    ]},
+  ];
+  return(
+    <div style={{position:"fixed",inset:0,zIndex:500,background:"rgba(0,0,0,0.85)",backdropFilter:"blur(8px)",overflowY:"auto",display:"flex",justifyContent:"center"}} onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div style={{width:"100%",maxWidth:480,background:t.settingsBg,minHeight:"100dvh",paddingBottom:50,animation:"slideDown 0.3s ease"}}>
+        <div style={{position:"sticky",top:0,zIndex:10,background:t.settingsBg,borderBottom:`1px solid ${t.surfaceBorder}`,padding:"14px 16px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+          <div style={{display:"flex",alignItems:"center",gap:10}}>
+            <span style={{fontSize:22}}>⚙️</span>
+            <span style={{color:t.text,fontWeight:800,fontSize:16,letterSpacing:1}}>PODEŠAVANJA</span>
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={reset} style={{background:"transparent",border:`1px solid ${t.surfaceBorder}`,borderRadius:20,padding:"5px 13px",color:t.textSub,fontSize:11,fontWeight:700}}>↺ Reset</button>
+            <button onClick={onClose} style={{background:accent,border:"none",borderRadius:20,padding:"5px 13px",color:"#fff",fontSize:12,fontWeight:700}}>✕ Zatvori</button>
+          </div>
+        </div>
+        <div style={{padding:"14px",display:"flex",flexDirection:"column",gap:12}}>
+          {/* Photos */}
+          <div style={{background:t.panelBg,border:`1px solid ${t.surfaceBorder}`,borderRadius:16,overflow:"hidden"}}>
+            <div style={{padding:"10px 14px",borderBottom:`1px solid ${t.surfaceBorder}`,background:`${accent}18`}}>
+              <div style={{color:t.text,fontSize:12,fontWeight:800}}>📷 FOTOGRAFIJE IZ GALERIJE</div>
+              <div style={{color:t.textSub,fontSize:10,marginTop:2}}>Tapnite na sliku da promenite iz galerije</div>
+            </div>
+            <div style={{padding:"12px",display:"flex",flexWrap:"wrap",gap:8}}>
+              {photos.map(({k,l})=><PhotoTile key={k} ikey={k} label={l} icons={icons} onUpload={onUpload} t={t}/>)}
+            </div>
+          </div>
+          {/* Sliders */}
+          {sliders.map(sec=>(
+            <div key={sec.t} style={{background:t.panelBg,border:`1px solid ${t.surfaceBorder}`,borderRadius:16,overflow:"hidden"}}>
+              <div style={{padding:"10px 14px",borderBottom:`1px solid ${t.surfaceBorder}`,background:`${accent}18`}}>
+                <span style={{color:t.text,fontSize:12,fontWeight:800}}>{sec.t}</span>
+              </div>
+              <div style={{padding:"14px 16px",display:"flex",flexDirection:"column",gap:14}}>
+                {sec.rows.map(r=><Slider key={r.k} label={r.l} val={cfg[r.k]} min={r.min} max={r.max} unit={r.u} onChange={v=>set(r.k,v)} accent={accent}/>)}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App ─────────────────────────────────────────────────────────────────
+function App(){
+  const [theme,setTheme]=useState(()=>ls("noteTheme","dark"));
+  const [cat,setCat]=useState("licno");
+  const [notes,setNotes]=useState([]);
+  const [aid,setAid]=useState(null);
+  const [atxt,setAtxt]=useState("");
+  const [atitle,setAtitle]=useState("");
+  const [fs,setFs]=useState(()=>ls("noteFontSize",15));
+  const [search,setSearch]=useState(false);
+  const [sq,setSq]=useState("");
+  const [sr,setSr]=useState([]);
+  const [notif,setNotif]=useState(null);
+  const [icons,setIcons]=useState(()=>ls("noteIcons",{}));
+  const [delConfirm,setDelConfirm]=useState(null);
+  const [settingsOpen,setSettingsOpen]=useState(false);
+  const [cfg,setCfg]=useState(()=>({...DEF,...ls("noteCfg2",{})}));
+  const [online,setOnline]=useState(navigator.onLine);
+  const timer=useRef(null);
+  const t=THEMES[theme];
+  const ac=theme==="neon"?"#a040ff":theme==="dark"?"#1a7fff":"#2a6eff";
+
+  // Computed values
+  const sf=cfg.cardScale/100, hf=cfg.cardHeight/100, pf=cfg.cardPad/100, isz=cfg.iconSize/100;
+  const cardBR=cfg.cardBR;
+  const iW=Math.round(isz*52), iH=Math.round(isz*52), iBR=Math.round(isz*14), iFs=Math.round(isz*26);
+  const shB=cfg.shadowBlur, shO=cfg.shadowOp/100, shY=cfg.shadowY, glO=cfg.glowI/100, ldO=cfg.ledI/100;
+  const bB=cfg.btnBlur, bO=cfg.btnOp/100, bBR=cfg.btnBR, b3=cfg.btn3d/100;
+  const tS=cfg.toolSize/100, tBR=cfg.toolBR;
+
+  function cShadow(rgb,active){
+    if(!active)return`0 ${shY}px ${Math.round(shB*0.3)}px rgba(0,0,0,${0.1*shO})`;
+    return`0 0 ${shB}px rgba(${rgb},${shO*glO}),0 ${shY}px ${Math.round(shB*0.6)}px rgba(0,0,0,${0.4*shO})`;
+  }
+  function bShadow(r,g,b){
+    return`0 ${Math.round(b3*6)}px ${bB}px rgba(${r},${g},${b},${bO*0.45}),0 2px 8px rgba(0,0,0,${0.3*bO}),inset 0 1px 0 rgba(${Math.min(r+100,255)},${Math.min(g+80,255)},${Math.min(b+80,255)},${0.25*b3})`;
+  }
+
+  useEffect(()=>{
+    const on=()=>setOnline(true), off=()=>setOnline(false);
+    window.addEventListener('online',on); window.addEventListener('offline',off);
+    return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off);};
+  },[]);
+
+  useEffect(()=>{loadNotes(cat);},[cat]);
+
+  async function loadNotes(c){
+    const list=await dbGetByCategory(c); setNotes(list);
+    if(list.length>0){
+      const still=list.find(n=>n.id===aid);
+      if(still){setAtxt(still.text);setAtitle(still.title||"");}
+      else{const l=list[list.length-1];setAid(l.id);setAtxt(l.text);setAtitle(l.title||"");}
+    }else{setAid(null);setAtxt("");setAtitle("");}
+  }
+
+  useEffect(()=>{
+    if(!aid)return;
+    clearTimeout(timer.current);
+    timer.current=setTimeout(()=>saveNote(false),600);
+    return()=>clearTimeout(timer.current);
+  },[atxt,atitle]);
+
+  async function saveNote(msg=true){
+    if(!aid)return;
+    const note={id:aid,category:cat,title:atitle,text:atxt,
+      createdAt:notes.find(n=>n.id===aid)?.createdAt||Date.now(),updatedAt:Date.now()};
+    await dbSave(note);
+    setNotes(p=>p.map(n=>n.id===aid?{...n,text:atxt,title:atitle,updatedAt:Date.now()}:n));
+    if(msg)toast("✓ Sačuvano!","#22c55e");
+  }
+
+  async function newNote(){
+    if(aid&&atxt.trim())await saveNote(false);
+    const nn={id:genId(),category:cat,title:"",text:"",createdAt:Date.now(),updatedAt:Date.now()};
+    await dbSave(nn);
+    const list=await dbGetByCategory(cat);
+    setNotes(list);setAid(nn.id);setAtxt("");setAtitle("");
+    toast("✚ Nova beleška!",ac);
+  }
+
+  async function pickNote(n){
+    if(aid&&aid!==n.id)await saveNote(false);
+    setAid(n.id);setAtxt(n.text);setAtitle(n.title||"");
+  }
+
+  async function delNote(id){
+    await dbDelete(id);
+    const list=await dbGetByCategory(cat); setNotes(list);
+    if(id===aid){
+      if(list.length>0){const l=list[list.length-1];setAid(l.id);setAtxt(l.text);setAtitle(l.title||"");}
+      else{setAid(null);setAtxt("");setAtitle("");}
+    }
+    setDelConfirm(null);toast("🗑 Obrisano","#ef4444");
+  }
+
+  function toast(msg,color="#22c55e"){setNotif({msg,color});setTimeout(()=>setNotif(null),2200);}
+
+  function cycleTheme(){
+    const keys=Object.keys(THEMES);const next=keys[(keys.indexOf(theme)+1)%keys.length];
+    setTheme(next);ss("noteTheme",next);
+  }
+
+  function uploadIcon(key){
+    const inp=document.createElement("input");inp.type="file";inp.accept="image/*";
+    inp.onchange=e=>{
+      const file=e.target.files[0];if(!file)return;
+      const r=new FileReader();
+      r.onload=ev=>{
+        const upd={...icons,[key]:ev.target.result};
+        setIcons(upd);ss("noteIcons",upd);
+        toast("📷 Slika promenjena!",ac);
+      };r.readAsDataURL(file);
+    };inp.click();
+  }
+
+  function exportTXT(){
+    if(!atxt)return toast("Beleška je prazna!","#f59e0b");
+    const blob=new Blob([atitle?`${atitle}\n\n${atxt}`:atxt],{type:"text/plain;charset=utf-8"});
+    const url=URL.createObjectURL(blob);const a=document.createElement("a");
+    a.href=url;a.download=`belezka-${aid?.slice(0,6)||"nova"}.txt`;a.click();URL.revokeObjectURL(url);
+    toast("📄 TXT izvoz uspešan!");
+  }
+
+  async function shareNote(){
+    const c=atitle?`${atitle}\n\n${atxt}`:atxt;
+    if(!c)return toast("Beleška je prazna!","#f59e0b");
+    if(navigator.share){try{await navigator.share({title:atitle||"Beleška",text:c});}catch{}}
+    else{navigator.clipboard?.writeText(c);toast("📋 Kopirano!");}
+  }
+
+  async function doSearch(){
+    if(!sq.trim())return;
+    const all=await dbGetAll();
+    setSr(all.filter(n=>n.text.toLowerCase().includes(sq.toLowerCase())||(n.title||"").toLowerCase().includes(sq.toLowerCase())));
+  }
+
+  const ni=notes.findIndex(n=>n.id===aid);
+
+  return(
+    <div style={{minHeight:"100dvh",background:t.bg,display:"flex",flexDirection:"column",alignItems:"center",fontFamily:"'Exo 2',sans-serif",transition:"background 0.5s",paddingBottom:"env(safe-area-inset-bottom,0px)"}}>
+
+      {/* Header */}
+      <div style={{width:"100%",maxWidth:480,background:t.statusBar,borderBottom:`1px solid ${t.surfaceBorder}`,padding:"12px 14px 10px",display:"flex",alignItems:"center",justifyContent:"space-between",backdropFilter:"blur(20px)",position:"sticky",top:0,zIndex:100,paddingTop:"calc(12px + env(safe-area-inset-top,0px))"}}>
+        <div style={{display:"flex",alignItems:"center",gap:10}}>
+          <div style={{width:36,height:36,borderRadius:11,background:"linear-gradient(135deg,#1a6eff,#0040cc)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,boxShadow:`0 0 16px ${t.glow1}`}}>📝</div>
+          <div>
+            <div style={{color:t.text,fontWeight:800,fontSize:15,letterSpacing:1}}>BELEŠKE</div>
+            <div style={{fontSize:9,fontWeight:700,color:online?"#22c55e":"#ef4444"}}>● {online?"Online":"Offline"}</div>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          <button onClick={cycleTheme} style={{background:"transparent",border:`1.5px solid ${t.surfaceBorder}`,borderRadius:20,padding:"5px 12px",color:t.text,cursor:"pointer",fontSize:11,fontWeight:700,backdropFilter:"blur(10px)"}}>
+            {t.icon} {t.name}
+          </button>
+          <button className="gear-btn" onClick={()=>setSettingsOpen(true)} style={{width:36,height:36,borderRadius:11,background:t.surface,border:`1.5px solid ${t.surfaceBorder}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:18,boxShadow:`0 2px 12px ${ac}30`,transition:"all 0.3s"}}>⚙️</button>
+        </div>
+      </div>
+
+      <div style={{width:"100%",maxWidth:480,padding:"14px 14px 0",display:"flex",flexDirection:"column",gap:12}}>
+
+        {/* Category Cards */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          {[
+            {k:"licno",l:"Lično",di:"📁",rgb:"40,100,255",g:t.cg1,led:t.cl1,btn:t.cb1,ig:t.ci1,igs:t.cg1s},
+            {k:"dokumenta",l:"Dokumenta",di:"📄",rgb:"255,120,30",g:t.cg2,led:t.cl2,btn:t.cb2,ig:t.ci2,igs:t.cg2s},
+          ].map(({k,l,di,rgb,g,led,btn,ig,igs})=>{
+            const active=cat===k;
+            return(
+              <button key={k} className="card-btn" onClick={()=>setCat(k)} style={{
+                background:active?g:t.surface,
+                border:`1.5px solid ${active?btn:t.surfaceBorder}`,
+                borderRadius:cardBR,padding:`${Math.round(pf*16)}px ${Math.round(pf*12)}px`,
+                minHeight:`${Math.round(hf*115)}px`,
+                display:"flex",flexDirection:"column",alignItems:"center",gap:7,
+                cursor:"pointer",boxShadow:cShadow(rgb,active),
+                transform:active?"scale(1.03)":"scale(1)",
+                transition:"all 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+                backdropFilter:"blur(20px)",position:"relative",overflow:"hidden",
+              }}>
+                <div style={{position:"absolute",top:0,left:0,right:0,height:"45%",background:"linear-gradient(180deg,rgba(255,255,255,0.1),transparent)",borderRadius:`${cardBR}px ${cardBR}px 50% 50%`,pointerEvents:"none"}}/>
+                <div style={{position:"absolute",bottom:-1,left:"5%",right:"5%",height:3,background:`linear-gradient(90deg,transparent,${led},transparent)`,filter:"blur(3px)",opacity:active?ldO:0,transition:"opacity 0.3s"}}/>
+                <div style={{width:iW,height:iH,borderRadius:iBR,background:ig,display:"flex",alignItems:"center",justifyContent:"center",fontSize:icons[k]?0:iFs,overflow:"hidden",boxShadow:`0 4px 18px ${igs},inset 0 1px 0 rgba(255,255,255,0.2)`}}
+                  onClick={e=>{e.stopPropagation();uploadIcon(k);}}>
+                  {icons[k]?<img src={icons[k]} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>:di}
+                </div>
+                <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2}}>
+                  <span style={{color:active?"#fff":t.textSub,fontWeight:800,fontSize:Math.round(14*sf)}}>{l}</span>
+                  <span style={{background:active?"rgba(255,255,255,0.15)":t.surface,border:`1px solid ${active?btn:t.surfaceBorder}`,color:active?"rgba(255,255,255,0.85)":t.textSub,fontSize:10,fontWeight:700,padding:"1px 8px",borderRadius:20}}>
+                    {notes.filter(n=>n.category===k).length} beleški
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Notes List */}
+        <div style={{background:t.panelBg,border:`1px solid ${t.surfaceBorder}`,borderRadius:18,overflow:"hidden",backdropFilter:"blur(20px)",boxShadow:t.panelShadow}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px",borderBottom:`1px solid ${t.surfaceBorder}`,background:`${ac}18`}}>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <span style={{fontSize:14}}>{cat==="licno"?"📁":"📄"}</span>
+              <span style={{color:t.text,fontSize:12,fontWeight:700}}>{cat==="licno"?"LIČNO":"DOKUMENTA"}</span>
+              <span style={{background:ac+"30",border:`1px solid ${ac}60`,color:ac,fontSize:10,fontWeight:800,padding:"1px 8px",borderRadius:20}}>{notes.length}</span>
+            </div>
+            <button className="plus-btn" onClick={newNote} style={{width:36,height:36,borderRadius:11,background:`linear-gradient(135deg,${ac},${ac}bb)`,border:"none",display:"flex",alignItems:"center",justifyContent:"center",fontSize:24,fontWeight:900,color:"#fff",lineHeight:1,boxShadow:`0 0 18px ${ac}60,0 2px 8px rgba(0,0,0,0.3)`,transition:"all 0.25s cubic-bezier(0.34,1.56,0.64,1)"}}>＋</button>
+          </div>
+          <div style={{maxHeight:145,overflowY:"auto",display:"flex",flexDirection:"column"}}>
+            {notes.length===0?(
+              <div style={{padding:"22px",textAlign:"center"}}>
+                <div style={{fontSize:30,marginBottom:6}}>📝</div>
+                <div style={{color:t.textSub,fontSize:12,fontWeight:600}}>Nema beleški — pritisnite ＋</div>
+              </div>
+            ):notes.map((note,idx)=>(
+              <div key={note.id} className="note-item" style={{display:"flex",alignItems:"center",gap:10,padding:"10px 14px",background:note.id===aid?(theme==="neon"?"rgba(80,20,180,0.3)":theme==="dark"?"rgba(20,60,140,0.4)":"rgba(180,210,255,0.6)"):"transparent",borderLeft:`3px solid ${note.id===aid?ac:"transparent"}`,borderBottom:`1px solid ${t.surfaceBorder}`,cursor:"pointer",transition:"background 0.18s",animation:"fadeIn 0.3s ease"}}
+                onClick={()=>pickNote(note)}>
+                <div style={{minWidth:26,height:26,borderRadius:8,background:note.id===aid?`linear-gradient(135deg,${ac},${ac}99)`:t.surface,border:`1px solid ${note.id===aid?ac+"60":t.surfaceBorder}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:800,color:note.id===aid?"#fff":t.textSub,flexShrink:0}}>{idx+1}</div>
+                <div style={{flex:1,overflow:"hidden",minWidth:0}}>
+                  {note.title&&<div style={{color:t.text,fontSize:12,fontWeight:700,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginBottom:1}}>{note.title}</div>}
+                  <div style={{color:note.id===aid?t.text:t.textSub,fontSize:12,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{preview(note.text)}</div>
+                </div>
+                <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:4,flexShrink:0}}>
+                  <span style={{color:t.textSub,fontSize:9,fontWeight:600,whiteSpace:"nowrap"}}>{fmtDate(note.updatedAt)}</span>
+                  {delConfirm===note.id?(
+                    <div style={{display:"flex",gap:4}} onClick={e=>e.stopPropagation()}>
+                      <button onClick={()=>delNote(note.id)} style={{background:"#ef4444",border:"none",borderRadius:6,padding:"2px 8px",color:"#fff",fontSize:10,fontWeight:700}}>Da</button>
+                      <button onClick={()=>setDelConfirm(null)} style={{background:t.surface,border:`1px solid ${t.surfaceBorder}`,borderRadius:6,padding:"2px 6px",color:t.textSub,fontSize:10}}>Ne</button>
+                    </div>
+                  ):(
+                    <button onClick={e=>{e.stopPropagation();setDelConfirm(note.id);}} style={{color:"rgba(220,60,60,0.6)",fontSize:15,padding:0}}>🗑</button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Editor */}
+        {aid?(
+          <div style={{background:t.panelBg,border:`1.5px solid ${t.anb}`,borderRadius:18,backdropFilter:"blur(20px)",boxShadow:t.panelShadow,overflow:"hidden",animation:"slideDown 0.3s ease"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"10px 14px 8px",borderBottom:`1px solid ${t.surfaceBorder}`}}>
+              <div style={{display:"flex",alignItems:"center",gap:8}}>
+                <span style={{background:`linear-gradient(135deg,${ac},${ac}bb)`,color:"#fff",fontSize:10,fontWeight:800,padding:"2px 10px",borderRadius:20,boxShadow:`0 0 8px ${ac}50`}}>#{ni+1}</span>
+                <span style={{color:t.textSub,fontSize:11,fontWeight:600}}>{cat==="licno"?"📁 Lično":"📄 Dokumenta"}</span>
+              </div>
+              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                <button onClick={()=>{const s=Math.max(11,fs-1);setFs(s);ss("noteFontSize",s);}} style={{width:24,height:24,borderRadius:7,border:`1px solid ${t.surfaceBorder}`,background:t.surface,color:t.text,fontSize:14,fontWeight:700}}>−</button>
+                <span style={{color:t.textSub,fontSize:11,minWidth:22,textAlign:"center"}}>{fs}</span>
+                <button onClick={()=>{const s=Math.min(24,fs+1);setFs(s);ss("noteFontSize",s);}} style={{width:24,height:24,borderRadius:7,border:`1px solid ${t.surfaceBorder}`,background:t.surface,color:t.text,fontSize:14,fontWeight:700}}>+</button>
+              </div>
+            </div>
+            <input value={atitle} onChange={e=>setAtitle(e.target.value)} placeholder="Naslov (opciono)..." style={{width:"100%",background:"transparent",border:"none",borderBottom:`1px solid ${t.surfaceBorder}`,color:t.text,fontSize:14,fontWeight:700,padding:"10px 14px",caretColor:ac}}/>
+            <textarea value={atxt} onChange={e=>setAtxt(e.target.value)} placeholder="Ovde upišite belešku..." style={{width:"100%",minHeight:185,background:"transparent",border:"none",resize:"none",color:t.text,fontSize:fs,lineHeight:1.75,padding:"12px 14px",caretColor:ac}}/>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"6px 14px 10px",borderTop:`1px solid ${t.surfaceBorder}`}}>
+              <span style={{color:t.textSub,fontSize:10,fontWeight:600,background:t.surface,padding:"2px 10px",borderRadius:20,border:`1px solid ${t.surfaceBorder}`}}>{atxt.length} kar.</span>
+              <span style={{color:t.textSub,fontSize:10,display:"flex",alignItems:"center",gap:4}}><span style={{width:6,height:6,borderRadius:"50%",background:"#22c55e",display:"inline-block"}}/>Auto-čuvanje</span>
+            </div>
+          </div>
+        ):(
+          <div style={{background:t.panelBg,border:`1.5px dashed ${t.surfaceBorder}`,borderRadius:18,padding:"30px 20px",textAlign:"center",backdropFilter:"blur(20px)"}}>
+            <div style={{fontSize:38,marginBottom:8}}>📝</div>
+            <div style={{color:t.textSub,fontSize:13,fontWeight:600}}>Pritisnite ＋ za novu belešku</div>
+          </div>
+        )}
+
+        {/* Main Buttons */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10}}>
+          {[
+            {l:"Obriši",em:"🗑️",ik:"bd",rgb:[200,20,20],grad:"linear-gradient(145deg,#cc2020,#8a0a0a)",action:()=>{if(aid)setDelConfirm(aid);}},
+            {l:"Sačuvaj",em:"💾",ik:"bs",rgb:[20,180,60],grad:"linear-gradient(145deg,#1a9e40,#0a6020)",action:()=>saveNote(true)},
+          ].map(({l,em,ik,rgb,grad,action})=>(
+            <button key={l} className="main-btn" onClick={action} disabled={!aid} style={{background:grad,border:"none",borderRadius:bBR,padding:`${Math.round(b3*14+4)}px 10px`,display:"flex",flexDirection:"column",alignItems:"center",gap:5,cursor:aid?"pointer":"default",boxShadow:aid?bShadow(...rgb):"none",transition:"all 0.2s",position:"relative",overflow:"hidden",opacity:aid?1:0.4}}>
+              <div style={{position:"absolute",top:0,left:0,right:0,height:"40%",background:`linear-gradient(180deg,rgba(255,255,255,${0.15*b3}),transparent)`,pointerEvents:"none"}}/>
+              <div style={{position:"absolute",bottom:0,left:"10%",right:"10%",height:2,background:`rgba(${rgb.join(",")},0.5)`,filter:"blur(2px)"}}/>
+              {icons[ik]?<img src={icons[ik]} style={{width:28,height:28,objectFit:"cover",borderRadius:8}} alt="" onClick={e=>{e.stopPropagation();uploadIcon(ik);}}/>:<span style={{fontSize:26}}>{em}</span>}
+              <span style={{color:"#fff",fontWeight:800,fontSize:14}}>{l}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Search */}
+        {search&&(
+          <div style={{animation:"slideDown 0.3s ease"}}>
+            <div style={{background:t.panelBg,border:`1.5px solid ${t.inputBorder}`,borderRadius:14,padding:"8px 12px",display:"flex",gap:8,backdropFilter:"blur(20px)"}}>
+              <input autoFocus value={sq} onChange={e=>setSq(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doSearch()} placeholder="Pretražite beleške..." style={{flex:1,background:"transparent",border:"none",color:t.text,fontSize:13,caretColor:ac}}/>
+              <button onClick={doSearch} style={{background:`linear-gradient(135deg,${ac},${ac}cc)`,border:"none",borderRadius:9,padding:"5px 12px",color:"#fff",fontWeight:700,fontSize:12}}>Traži</button>
+              <button onClick={()=>{setSearch(false);setSr([]);setSq("");}} style={{background:t.surface,border:`1px solid ${t.surfaceBorder}`,borderRadius:9,padding:"5px 9px",color:t.textSub}}>✕</button>
+            </div>
+            {sr.length>0&&(
+              <div style={{marginTop:6,background:t.panelBg,border:`1px solid ${t.surfaceBorder}`,borderRadius:12,overflow:"hidden"}}>
+                {sr.map((r,i)=>(
+                  <div key={i} onClick={()=>{setCat(r.category);setTimeout(()=>pickNote(r),100);setSearch(false);setSr([]);}} style={{padding:"9px 12px",cursor:"pointer",borderBottom:i<sr.length-1?`1px solid ${t.surfaceBorder}`:"none"}}>
+                    <div style={{color:t.textSub,fontSize:10,fontWeight:700,marginBottom:2}}>{r.category==="licno"?"📁 Lično":"📄 Dokumenta"}{r.title?` — ${r.title}`:""}</div>
+                    <div style={{color:t.text,fontSize:12}}>{preview(r.text)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {sr.length===0&&sq&&<div style={{color:t.textSub,textAlign:"center",padding:10,fontSize:12}}>Nema rezultata za "{sq}"</div>}
+          </div>
+        )}
+
+        {/* Tool Buttons */}
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:10,paddingBottom:20}}>
+          {[
+            {k:"ts",l:"Pretraga",em:"🔍",glow:"rgba(30,100,220,0.4)",action:()=>setSearch(v=>!v)},
+            {k:"te",l:"Izvoz TXT",em:"📋",glow:"rgba(120,50,220,0.4)",action:exportTXT},
+            {k:"th",l:"Deljenje",em:"🔗",glow:"rgba(30,80,200,0.4)",action:shareNote},
+          ].map(({k,l,em,glow,action})=>(
+            <button key={k} className="tool-btn" onClick={action} style={{background:t.toolBg,border:`1.5px solid ${t.toolBorder}`,borderRadius:tBR,padding:"12px 8px 10px",display:"flex",flexDirection:"column",alignItems:"center",gap:5,boxShadow:`0 4px 18px ${glow}`,transition:"all 0.2s"}}>
+              <div style={{width:Math.round(tS*44),height:Math.round(tS*44),borderRadius:tBR,background:t.surface,display:"flex",alignItems:"center",justifyContent:"center",fontSize:Math.round(tS*20),boxShadow:`0 0 10px ${glow}`,border:`1px solid ${t.toolBorder}`,overflow:"hidden"}}
+                onClick={e=>{e.stopPropagation();uploadIcon(k);}}>
+                {icons[k]?<img src={icons[k]} style={{width:"100%",height:"100%",objectFit:"cover"}} alt=""/>:em}
+              </div>
+              <span style={{color:t.text,fontSize:10,fontWeight:700,textAlign:"center"}}>{l}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div style={{width:"100%",maxWidth:480,background:t.statusBar,borderTop:`1px solid ${t.surfaceBorder}`,padding:"8px 16px",display:"flex",alignItems:"center",justifyContent:"center",gap:18,backdropFilter:"blur(20px)"}}>
+        {[{i:"🛡️",l:"PWA"},{i:"📡",l:"Offline"},{i:"💾",l:"Auto-save"},{i:"🗄️",l:"IndexedDB"}].map(({i,l})=>(
+          <div key={l} style={{display:"flex",alignItems:"center",gap:4}}>
+            <span style={{fontSize:11}}>{i}</span>
+            <span style={{color:t.textSub,fontSize:9,fontWeight:700}}>{l}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Settings */}
+      <Settings open={settingsOpen} onClose={()=>setSettingsOpen(false)} cfg={cfg} setCfg={setCfg} icons={icons} onUpload={uploadIcon} t={t} accent={ac}/>
+
+      {/* Toast */}
+      {notif&&<div style={{position:"fixed",top:70,left:"50%",transform:"translateX(-50%)",background:notif.color,color:"#fff",padding:"10px 24px",borderRadius:30,fontWeight:700,fontSize:13,zIndex:9999,boxShadow:`0 4px 20px ${notif.color}60`,animation:"popIn 0.3s ease",whiteSpace:"nowrap"}}>{notif.msg}</div>}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('app')).render(<App/>);
+</script>
+</body>
+</html>
